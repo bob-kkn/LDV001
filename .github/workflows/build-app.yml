@@ -1,0 +1,200 @@
+name: Build macOS APP
+
+on:
+  push:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: macos-14  # Apple Silicon (arm64)
+
+    steps:
+      # 1) Repo checkout
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      # 2) Python setup
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: 'pip'
+          cache-dependency-path: '**/requirements.txt'
+
+      # 3) Install dependencies
+      - name: Install dependencies from requirements.txt
+        run: |
+          set -euo pipefail
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      # 4) Create .env from GitHub Secret
+
+      # 5) PyArmor: generate obfuscated files
+      - name: Obfuscate with PyArmor
+        run: |
+          set -euo pipefail
+          pyarmor gen -r pano_blur.py pano_blur_gui.py
+
+      # 6) PyInstaller: build using .spec
+      - name: Build with PyInstaller (.spec)
+        run: |
+          set -euo pipefail
+          python -m PyInstaller --clean --distpath dist --workpath .pyarmor/pack/build main-mac.spec
+
+      # 7) Find built .app
+      - name: Detect built app path
+        id: find_app
+        run: |
+          set -euo pipefail
+          APP=$(find dist -type d -name "*.app" | head -n1)
+          [ -n "${APP:-}" ] || { echo "No .app found in dist"; exit 1; }
+          echo "app=$APP" >> "$GITHUB_OUTPUT"
+          echo "Found app: $APP"
+
+      # 8) Ensure executable bit
+      - name: Ensure executable bit
+        run: |
+          set -euo pipefail
+          APP="${{ steps.find_app.outputs.app }}"
+          chmod +x "$APP/Contents/MacOS/"* || true
+
+      # 9) Restore signing files
+      - name: Restore signing files
+        run: |
+          set -euo pipefail
+          if base64 --help 2>&1 | grep -qi 'GNU coreutils'; then
+            DECODE="base64 --decode"
+          else
+            DECODE="base64 -D"
+          fi
+
+          printf '%s' "${{ secrets.CAUNIT_P12_B64 }}" | tr -d '\r' | $DECODE > signing.p12
+          printf '%s' "${{ secrets.API_KEY_P8 }}" | tr -d '\r' > "AuthKey_${{ secrets.KEY_ID }}.p8"
+
+          echo "Runner SHA256 of P12:"
+          shasum -a 256 signing.p12 || true
+
+      # 10) Verify & Repackage P12 on runner
+      - name: Verify & Repackage P12 on runner
+        env:
+          CAUNIT_PASSWORD: ${{ secrets.CAUNIT_PASSWORD }}
+        run: |
+          set -euo pipefail
+          PW_STRIPPED="$(printf '%s' "$CAUNIT_PASSWORD" | tr -d '\r\n')"
+          echo "PW_STRIPPED=$PW_STRIPPED" >> $GITHUB_ENV
+
+          if openssl pkcs12 -in signing.p12 -passin pass:"$PW_STRIPPED" -nokeys -clcerts -info >/dev/null 2>&1; then
+            echo "✅ openssl: password OK (non-empty)"
+            openssl pkcs12 -in signing.p12 -passin pass:"$PW_STRIPPED" -nodes -out /tmp/cert.pem
+            openssl pkcs12 -export -in /tmp/cert.pem -out signing.p12.norm -passout pass:"$PW_STRIPPED" -name "DevID"
+            mv signing.p12.norm signing.p12
+          else
+            echo "❌ openssl: provided password failed. Trying empty password…"
+            if openssl pkcs12 -in signing.p12 -passin pass: -nokeys -clcerts -info >/dev/null 2>&1; then
+              echo "⚠️ EMPTY password P12 detected"
+              echo "PW_STRIPPED=" >> $GITHUB_ENV
+              openssl pkcs12 -in signing.p12 -passin pass: -nodes -out /tmp/cert.pem
+              openssl pkcs12 -export -in /tmp/cert.pem -out signing.p12.norm -passout pass: -name "DevID"
+              mv signing.p12.norm signing.p12
+            else
+              echo "❌ openssl: P12/password mismatch or corrupted P12"
+              file signing.p12 || true
+              shasum -a 256 signing.p12 || true
+              exit 1
+            fi
+          fi
+
+          echo "Runner SHA256 after repack:"
+          shasum -a 256 signing.p12 || true
+
+      # 11) Verify P12 & normalize password
+      - name: Verify P12 & normalize password
+        env:
+          CAUNIT_PASSWORD: ${{ secrets.CAUNIT_PASSWORD }}
+        run: |
+          set -euo pipefail
+          PW_STRIPPED="$(printf '%s' "$CAUNIT_PASSWORD" | tr -d '\r\n')"
+          echo "PW_LEN=${#PW_STRIPPED}"
+          echo "PW_STRIPPED=$PW_STRIPPED" >> $GITHUB_ENV
+
+          if openssl pkcs12 -in signing.p12 -passin pass:"$PW_STRIPPED" -nokeys -clcerts -info >/dev/null 2>&1; then
+            echo "✅ openssl: password OK"
+          else
+            echo "❌ openssl: password mismatch or corrupt p12 after repack"
+            dd if="signing.p12" bs=1 count=16 2>/dev/null | hexdump -C || true
+            exit 1
+          fi
+
+      # 12) Create keychain and import cert
+      - name: Create keychain and import cert
+        run: |
+          set -euo pipefail
+          security create-keychain -p temp-pass build.keychain
+          security set-keychain-settings -lut 21600 build.keychain
+          security unlock-keychain -p temp-pass build.keychain
+          security list-keychains -d user -s build.keychain $(security list-keychains -d user | sed 's/[""]//g')
+
+          security import signing.p12 -f pkcs12 -k build.keychain -P "$PW_STRIPPED" -A -T /usr/bin/codesign -T /usr/bin/security
+          security set-key-partition-list -S apple-tool:,apple: -s -k temp-pass build.keychain
+          security find-identity -v -p codesigning build.keychain || true
+
+      # 13) Detect signing identity
+      - name: Detect signing identity
+        id: ident
+        run: |
+          set -euo pipefail
+          ID=$(security find-identity -p codesigning -v build.keychain | sed -n 's/.*"\(.*\)"/\1/p' | head -n1)
+          [ -n "$ID" ] || { echo "No signing identity"; exit 1; }
+          echo "SIGNING_IDENTITY=$ID" >> $GITHUB_OUTPUT
+          echo "Using identity: $ID"
+
+      # 14) Codesign app (Developer ID + Hardened Runtime)
+      - name: Codesign app (Developer ID)
+        run: |
+          set -euo pipefail
+          APP="${{ steps.find_app.outputs.app }}"
+          codesign --force --deep --options runtime --timestamp \
+            --entitlements entitlements.plist \
+            -s "${{ steps.ident.outputs.SIGNING_IDENTITY }}" \
+            "$APP"
+          codesign --verify --deep --strict --verbose=2 "$APP"
+
+      # 15) Zip the .app
+      - name: Zip built app
+        run: |
+          set -euo pipefail
+          APP="${{ steps.find_app.outputs.app }}"
+          ZIP_NAME="LDV001-macOS.zip"
+          rm -f "$ZIP_NAME"
+          /usr/bin/ditto -c -k --sequesterRsrc --keepParent "$APP" "$ZIP_NAME"
+          echo "Zipped to $ZIP_NAME"
+
+      # 16) Notarize with notarytool
+      - name: Notarize with notarytool
+        run: |
+          set -euo pipefail
+          xcrun notarytool submit "LDV001-macOS.zip" \
+            --key "AuthKey_${{ secrets.KEY_ID }}.p8" \
+            --key-id "${{ secrets.KEY_ID }}" \
+            --issuer "${{ secrets.ISSUER_ID }}" \
+            --wait
+          # 팀에 따라 --team-id 필요할 수 있음:
+          # --team-id ABCDE12345
+
+      # 17) Staple ticket to .app
+      - name: Staple ticket
+        run: |
+          set -euo pipefail
+          APP="${{ steps.find_app.outputs.app }}"
+          xcrun stapler staple "$APP"
+          xcrun stapler validate "$APP"
+
+      # 18) Upload artifact
+      - name: Upload APP Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: LDV001-macOS-APP
+          path: LDV001-macOS.zip
+          if-no-files-found: error
+          # retention-days: 30

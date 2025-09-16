@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <!-- App Sandbox 미사용 (Mac App Store 배포가 아니면 일반적으로 불필요) -->
+  <key>com.apple.security.app-sandbox</key><false/>
+
+  <!-- Hardened Runtime 관련: PyTorch 등 JIT/확장 모듈 로딩 허용 -->
+  <key>com.apple.security.cs.allow-jit</key><true/>
+  <key>com.apple.security.cs.allow-unsigned-executable-memory</key><true/>
+  <key>com.apple.security.cs.disable-library-validation</key><true/>
+
+  <!-- 필요 시 디버깅 허용(개발 단계에서만; 배포본에는 보통 불필요) -->
+  <!-- <key>com.apple.security.cs.debugger</key><true/> -->
+</dict>
+</plist>
