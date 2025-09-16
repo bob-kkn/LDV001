@@ -429,7 +429,7 @@ class App(tk.Tk):
     def __init__(self):
         super().__init__()
         self.title(APP_TITLE)
-        self.geometry("800x520")
+        self.geometry("960x540")
         self.cfg = load_settings()
 
         self.var_input = tk.StringVar()
