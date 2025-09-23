@@ -28,7 +28,11 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r requirements.txt
 
-      # 4) Create .env from GitHub Secret
+      # 4) (Optional) Create .env from GitHub Secret
+      # - name: Create .env
+      #   run: |
+      #     set -euo pipefail
+      #     printf '%s\n' "${{ secrets.APP_ENV_FILE }}" > .env
 
       # 5) PyArmor: generate obfuscated files
       - name: Obfuscate with PyArmor
@@ -69,7 +73,9 @@ jobs:
             DECODE="base64 -D"
           fi
 
+          # Developer ID Application p12 (base64 in secret)
           printf '%s' "${{ secrets.CAUNIT_P12_B64 }}" | tr -d '\r' | $DECODE > signing.p12
+          # App Store Connect API key (.p8)
           printf '%s' "${{ secrets.API_KEY_P8 }}" | tr -d '\r' > "AuthKey_${{ secrets.KEY_ID }}.p8"
 
           echo "Runner SHA256 of P12:"
@@ -160,41 +166,68 @@ jobs:
             "$APP"
           codesign --verify --deep --strict --verbose=2 "$APP"
 
-      # 15) Zip the .app
-      - name: Zip built app
+      # 15) Create DMG
+      - name: Create DMG
         run: |
           set -euo pipefail
           APP="${{ steps.find_app.outputs.app }}"
-          ZIP_NAME="LDV001-macOS.zip"
-          rm -f "$ZIP_NAME"
-          /usr/bin/ditto -c -k --sequesterRsrc --keepParent "$APP" "$ZIP_NAME"
-          echo "Zipped to $ZIP_NAME"
+          DMG_NAME="LDV001-macOS.dmg"
+          VOL_NAME="LDV001"
 
-      # 16) Notarize with notarytool
-      - name: Notarize with notarytool
+          rm -rf dmg_src
+          mkdir -p dmg_src
+          /usr/bin/ditto "$APP" "dmg_src/$(basename "$APP")"
+          ln -s /Applications "dmg_src/Applications"
+
+          rm -f "$DMG_NAME"
+          hdiutil create -volname "$VOL_NAME" -srcfolder "dmg_src" -ov -format UDZO "$DMG_NAME"
+          echo "Created $DMG_NAME"
+
+      # 16) Codesign DMG
+      - name: Codesign DMG
         run: |
           set -euo pipefail
-          xcrun notarytool submit "LDV001-macOS.zip" \
+          DMG_NAME="LDV001-macOS.dmg"
+          codesign --force --options runtime --timestamp \
+            -s "${{ steps.ident.outputs.SIGNING_IDENTITY }}" \
+            "$DMG_NAME"
+          codesign --verify --strict --verbose=2 "$DMG_NAME"
+
+      # 17) Notarize DMG with notarytool
+      - name: Notarize DMG with notarytool
+        run: |
+          set -euo pipefail
+          DMG_NAME="LDV001-macOS.dmg"
+          xcrun notarytool submit "$DMG_NAME" \
             --key "AuthKey_${{ secrets.KEY_ID }}.p8" \
             --key-id "${{ secrets.KEY_ID }}" \
             --issuer "${{ secrets.ISSUER_ID }}" \
             --wait
-          # 팀에 따라 --team-id 필요할 수 있음:
+          # 필요 시 팀 ID:
           # --team-id ABCDE12345
 
-      # 17) Staple ticket to .app
-      - name: Staple ticket
+      # 18) Staple ticket to DMG
+      - name: Staple DMG
         run: |
           set -euo pipefail
-          APP="${{ steps.find_app.outputs.app }}"
-          xcrun stapler staple "$APP"
-          xcrun stapler validate "$APP"
+          DMG_NAME="LDV001-macOS.dmg"
+          xcrun stapler staple "$DMG_NAME"
+          xcrun stapler validate "$DMG_NAME"
 
-      # 18) Upload artifact
-      - name: Upload APP Artifact
+      # 19) Upload DMG Artifact
+      - name: Upload DMG Artifact
         uses: actions/upload-artifact@v4
         with:
-          name: LDV001-macOS-APP
-          path: LDV001-macOS.zip
+          name: LDV001-macOS-DMG
+          path: LDV001-macOS.dmg
           if-no-files-found: error
           # retention-days: 30
+
+      # 20) (Optional) Cleanup keychain
+      - name: Cleanup keychain
+        if: always()
+        run: |
+          set -euo pipefail
+          security delete-keychain build.keychain || true
+          rm -f signing.p12 "AuthKey_${{ secrets.KEY_ID }}.p8" || true
+          rm -rf dmg_src .pyarmor || true
