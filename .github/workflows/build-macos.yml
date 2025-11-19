@@ -199,7 +199,7 @@ jobs:
           set -euo pipefail
           DMG_NAME="LDV001-macOS.dmg"
           xcrun notarytool submit "$DMG_NAME" \
-            --key "AuthKey_${{ secrets.API_KEY_P8 }}.p8" \
+            --key "AuthKey_${{ secrets.KEY_ID }}.p8" \
             --key-id "${{ secrets.KEY_ID }}" \
             --issuer "${{ secrets.ISSUER_ID }}" \
             --wait
