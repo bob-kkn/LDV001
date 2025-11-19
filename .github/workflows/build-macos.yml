@@ -193,13 +193,13 @@ jobs:
             "$DMG_NAME"
           codesign --verify --strict --verbose=2 "$DMG_NAME"
 
-      # 17) Notarize DMG with notarytool
+      # 17) Notarize DMG with notarytool # 계약 업데이트안해서 오류 발생
       - name: Notarize DMG with notarytool
         run: |
           set -euo pipefail
           DMG_NAME="LDV001-macOS.dmg"
           xcrun notarytool submit "$DMG_NAME" \
-            --key "AuthKey_${{ secrets.KEY_ID }}.p8" \
+            --key "AuthKey_${{ secrets.API_KEY_P8 }}.p8" \
             --key-id "${{ secrets.KEY_ID }}" \
             --issuer "${{ secrets.ISSUER_ID }}" \
             --wait
