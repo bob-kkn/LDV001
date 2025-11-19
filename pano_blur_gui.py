@@ -32,8 +32,10 @@ SETTINGS_FILE = Path.home() / ".pano_blur_gui_settings.json"
 
 DEFAULT_INPUT  = Path("./input").resolve()
 DEFAULT_OUTPUT = Path("./output").resolve()
-DEFAULT_FACE   = Path("./models/yolov8x-face-lindevs.pt").resolve()
-DEFAULT_PLATE  = Path("./models/best.pt").resolve()
+
+DEFAULT_MODELS = Path("./models").resolve()
+DEFAULT_FACE  = DEFAULT_MODELS / "yolov8x-face-lindevs.pt"
+DEFAULT_PLATE = DEFAULT_MODELS / "best.pt"
 
 # -------------------------
 # Helpers

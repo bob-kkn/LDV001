@@ -64,7 +64,7 @@ app = BUNDLE(
     exe,
     name='LDV001.app',
     icon='Resource/icon.icns',
-    bundle_identifier='kr.KnWorks.LDV001',
+    bundle_identifier='kr.co.knworks.ldv001',
     info_plist={
         'CFBundleName': 'LDV001',
         'CFBundleDisplayName': 'LDV001',
